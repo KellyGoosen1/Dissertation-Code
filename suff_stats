@@ -1,0 +1,106 @@
+# Problems: 
+# 1. Need to remove first say 25 observations from each simulated path
+# 2. Simulating LOB is slow. Need to identify slow functions and vectorize/parallalize
+
+# Need to construct C matrix:
+# C matrix contains p (=5) columns of beta estimates, with L rows (for each y observation)
+# i.e. regress theta_j for all j to obtain beta estimates which will be set to column j of matrix C
+# However, if time series data simulated is 200 observations, we require more than 200 simulations...
+# 200 simulations will take a LONGGGG time to run at this rate.
+
+# Function to install package IF not already installed:
+install_packages_not_installed = function(p) {
+  if (!is.element(p, installed.packages()[,1])){
+    install.packages(p, dep = TRUE)
+  }}
+
+install_packages_not_installed("dplyr")
+install_packages_not_installed("doParallel")
+install_packages_not_installed("foreach")
+install_packages_not_installed("glue")
+install_packages_not_installed("magrittr")
+
+library(magrittr)
+library(glue)
+library(foreach) # parallel code to use all 4 cores
+library(doParallel) # parallel code to use all 4 cores
+library(dplyr)
+
+set.seed(123)
+source("Preis_Neat_v2.R")
+
+# Algorithm to find sufficient statistics
+
+# 1. s() = I()
+# 2. Compute s(y_obs) = y_obs
+L = 5 # TimeHorizon
+N = 10 # number of simulated y_obs
+
+#Actual_LOB = Sim_OB(lambda0, C_lam, mean_q, q_taker0, delta_s, TimeHorizon=L, Na, alpha, mu, q_provider)
+#y_obs = Actual_LOB[[2]] # midprice
+#plot(Actual_LOB, type = "l")
+
+# 3. Sample N thetas from pi(theta)
+# Prior dbn:
+#   delta, tilda, mu U(0,0.1)
+#   alpha U(0.1, 0.5)
+#   lambda_0 U(0,200)
+#   C_lam  U(0,20)
+
+prior_sim = function(num){
+  deltas = runif(num, 0, 0.5)
+  mus = runif(num, 0, 0.1)
+  alphas = runif(num, 0.1, 0.5)
+  lambda_0s = runif(num, 0, 2)
+  C_lams = runif(num, 0, 1)
+  
+  prior_mat = cbind(deltas, mus, alphas, lambda_0s, C_lams)
+  
+  return(as.data.frame(prior_mat))
+}
+
+prior_mat = prior_sim(N)
+#head(prior_mat)
+
+# 4. Using priors, simulate observations
+y_sim_obs = matrix(NA, nrow = N, ncol = L)
+
+timestamp()
+# a) Initialize parallelization
+# initialize vector
+y_sim=vector() 
+# setup parallel backend to use many processors
+cores=detectCores()
+# not to overload your computer
+cl = makeCluster(cores[1]-1)
+# Start parallel computing
+registerDoParallel(cl)
+clusterCall(cl, function() library(magrittr)) #required library for every node
+
+y_sim = foreach(m=1:N, .combine=rbind) %dopar% {
+  simLOB_temp = Sim_OB(prior_mat$lambda_0s[m], prior_mat$C_lams[m], mean_q, q_taker0, prior_mat$deltas[m], TimeHorizon=L, Na, prior_mat$alphas[m], 
+                  prior_mat$mus[m], q_provider)
+  simLOB_temp # Equivalent to y_sim= rbind(y_sim, simLOB_temp)
+}
+
+#-------------------------------------------------------------------------------------
+# c) Stop parallel computing
+stopCluster(cl)
+
+y_sim_df = as.data.frame(y_sim)
+write.csv(y_sim_df, "y_sim_df_v0.1.csv")
+
+timestamp()
+#for (m in 1:N){
+#  simLOB = Sim_OB(prior_mat$lambda_0s[m], prior_mat$C_lams[m], mean_q, q_taker0, prior_mat$deltas[m], TimeHorizon=L, Na, prior_mat$alphas[m], 
+#                  prior_mat$mus[m], q_provider)
+#  y_sim_obs[m,] = simLOB[[2]]
+#}
+
+#plot(y_sim_obs[9,], type = "l")
+
+# 4. Regress theta = b0 + b1y1 + b2y2 + ... + bTYT
+#reg_df = as.data.frame(cbind(prior_mat[1:N,1], y_sim))
+#fit = lm(reg_df$V1~. , data =  reg_df)
+#fit
+#summary(fit)
